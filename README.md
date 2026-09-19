@@ -53,21 +53,25 @@ This platform automates that loop:
 
 ## 2. Technology Stack
 
-| Layer | Technology | Why it's here |
-|-------|-----------|---------------|
-| Frontend | **React.js** | Dashboard, filters, job details, profile, resume preview |
-| Backend | **Node.js + Express.js** | REST APIs, auth, business logic |
-| Database | **MongoDB** | Users, profiles, jobs, resumes, applications, logs |
-| Real-time | **WebSocket / Socket.IO** | Push pipeline progress and "your resume is ready" without polling |
-| Cache & Queue | **Redis** | Caching, background job queue, rate limiting, sessions |
-| Architecture | **Microservices** | Each domain is an independently runnable Express service |
-| Reverse Proxy | **Nginx** | Single entry point, TLS termination, serves the built React app |
-| Containers | **Docker + Docker Compose** | One command brings the whole system up |
-| API Style | **REST** | JSON over HTTP between frontend and gateway |
-| Search | **Serper API** | Discovers job-related search results |
-| AI | **LLM API** | Classification, extraction, matching, resume writing |
-| Resume | **LaTeX** | Professional, ATS-friendly PDF output |
-| Version Control | **Git + GitHub** | Branch-and-PR workflow (see §9) |
+This is a **MERN stack** project — **M**ongoDB, **E**xpress.js, **R**eact.js, **N**ode.js. Everything else in the table is an external service or tool those four work with.
+
+| Layer | Technology | Purpose |
+|-------|-----------|---------|
+| Frontend | **React.js** | Job dashboard, filters, job details, profile, resume preview |
+| Backend | **Node.js + Express.js** | REST APIs, authentication, business logic |
+| Database | **MongoDB** | Users, profiles, jobs, resumes, applications, activity logs |
+| API | **REST over HTTPS** | Communication between the React app and the backend |
+| Authentication | **JWT + password hashing** | Login sessions and secure credential storage |
+| Scheduling | **Node cron** | Runs the job-discovery pipeline every night |
+| Cache & Queue | **Redis** | Caches job data, queues background jobs, rate limiting, sessions |
+| Background Processing | **Worker service** | Runs slow AI analysis and resume generation outside the web request |
+| Job Search | **Serper API** | Searches job listings across LinkedIn, Naukri, Indeed, Glassdoor, and more |
+| AI | **OpenAI / LLM API** | Job analysis, requirement extraction, profile matching, resume content |
+| Resume | **LaTeX** | Controlled template compiled into a professional PDF |
+| File Storage | **MinIO / AWS S3** | Generated resume PDFs, resume templates, user uploads |
+| Email | **SendGrid** | Application updates, job alerts, notifications |
+
+**Do not add frameworks, libraries, or infrastructure outside this table without instructor approval.**
 
 ---
 
@@ -76,19 +80,19 @@ This platform automates that loop:
 ```mermaid
 flowchart TD
     U[Users / Job Seekers] --> FE[React.js Frontend]
-    FE -->|HTTPS / REST| NG[Nginx + API Gateway]
+    FE -->|HTTPS / REST API| GW[API Gateway - Express.js]
 
-    NG --> AUTH[Auth Service]
-    NG --> USER[User Service]
-    NG --> DISC[Job Discovery Service]
-    NG --> AI[AI Analysis Service]
-    NG --> MATCH[Job Matching Service]
-    NG --> RES[Resume Service]
-    NG --> APP[Application Service]
+    GW --> AUTH[Auth Service]
+    GW --> USER[User Service]
+    GW --> DISC[Job Discovery Service]
+    GW --> AI[AI Analysis Service]
+    GW --> MATCH[Job Matching Service]
+    GW --> RES[Resume Service]
+    GW --> APP[Application Service]
 
     DISC -->|search| SERPER[(Serper API)]
-    AI -->|prompts| LLM[(LLM API)]
-    NOTIF[Notification Service] -->|email| MAIL[(Email Provider)]
+    AI -->|prompts| LLM[(OpenAI / LLM API)]
+    NOTIF[Notification Service] -->|email| MAIL[(SendGrid)]
 
     AUTH --- DB[(MongoDB)]
     USER --- DB
@@ -97,11 +101,11 @@ flowchart TD
     RES --- DB
     APP --- DB
 
-    RES --- FS[(File Storage: generated PDFs)]
+    RES --- FS[(MinIO / AWS S3)]
     PDF[PDF Generation Service] --- FS
 
-    SCHED[Scheduler Service: nightly cron] --> QUEUE[(Redis Queue)]
-    NG -.->|slow tasks| QUEUE
+    SCHED[Scheduler Service - nightly cron] --> QUEUE[(Redis Queue)]
+    GW -.->|slow tasks| QUEUE
     QUEUE --> WORK[Worker Service]
     WORK --> DISC
     WORK --> PROC
@@ -109,11 +113,9 @@ flowchart TD
     WORK --> RES
     WORK --> PDF
     WORK --> NOTIF
-
-    NOTIF -->|Socket.IO| FE
 ```
 
-**The key architectural idea:** anything slow or unreliable — a Serper call, an LLM call, a LaTeX compile — must **not** block an HTTP request. The scheduler and the API both push work onto a Redis queue; the worker drains it; the user is told over Socket.IO when it's done.
+**The key architectural idea:** anything slow or unreliable — a Serper call, an LLM call, a LaTeX compile — must **not** block an HTTP request. The scheduler and the API both push work onto a Redis queue, and the worker processes it. The frontend checks the task's status until it's done, and the user can also get an email through SendGrid.
 
 ---
 
@@ -159,7 +161,7 @@ job-automation-tool/
     │   │   └── compiler/          # LaTeX → PDF, sandboxed
     │   ├── application-service/   # application records + status
     │   ├── notification-service/
-    │   │   └── providers/email/   # email provider wrapper
+    │   │   └── providers/email/   # SendGrid client
     │   ├── scheduler-service/     # cron/ and jobs/ — the nightly trigger
     │   ├── worker-service/        # queues/, processors/, jobs/
     │   └── app.js
@@ -167,11 +169,9 @@ job-automation-tool/
     ├── uploads/                   # user uploads (profile pictures etc.)
     ├── generated/
     │   ├── resumes/               # .tex output
-    │   └── pdfs/                  # compiled PDFs
+    │   └── pdfs/                  # compiled PDFs, before upload to MinIO / S3
     ├── .env.example               # copy to .env and fill in
-    ├── package.json
-    ├── Dockerfile
-    └── docker-compose.yml
+    └── package.json
 ```
 
 > Folders contain a `.gitkeep` file only so Git tracks the empty directory. **Delete the `.gitkeep` once you add a real file to that folder.**
@@ -216,9 +216,9 @@ User clicks "Generate Resume" on a job
                     ├─> ai-analysis-service:    extract job requirements
                     ├─> job-matching-service:   compare against the user's profile
                     ├─> resume-service:         select TRUTHFUL content, fill LaTeX template
-                    ├─> pdf-generation-service: compile .tex → .pdf
-                    └─> notification-service:   Socket.IO push (+ optional email)
-  └─> frontend receives the "resume ready" event → shows the preview
+                    ├─> pdf-generation-service: compile .tex → .pdf, store in MinIO / S3
+                    └─> notification-service:   email via SendGrid (optional)
+  └─> frontend checks GET /api/resumes/:id until status is "completed" → shows the preview
 ```
 
 ### AI output must be structured
@@ -320,10 +320,12 @@ A **job card** shows: title, company, location/work mode, posted date, match sco
 
 ### Prerequisites
 
-- Node.js 20+
-- Docker Desktop (includes Docker Compose)
-- A LaTeX distribution (TeX Live or MiKTeX) — or run the compile step inside a container
-- A Serper API key and an LLM API key
+- Node.js (LTS version)
+- MongoDB — a local install or a managed MongoDB instance
+- Redis
+- A LaTeX distribution installed, to compile `.tex` files into PDF
+- MinIO running locally, or an AWS S3 bucket
+- API keys: Serper, OpenAI / LLM, SendGrid
 
 ### Steps
 
@@ -337,22 +339,12 @@ cd backend
 cp .env.example .env
 #    Open .env and fill in every value. Never commit this file.
 
-# 3. Run everything with Docker (MongoDB, Redis, and the services)
-docker compose up --build
-
-# 4. Or run the backend directly while developing
+# 3. Install and run the backend
 npm install
 npm run dev
 ```
 
-The React app lives in `frontend/`. Scaffold it with Vite:
-
-```bash
-cd frontend
-npm create vite@latest . -- --template react
-npm install
-npm run dev
-```
+The React.js app lives in `frontend/`, which is empty. Create the React app there, and point its API base URL at the backend.
 
 ### Verify your setup works
 
@@ -444,7 +436,7 @@ A resume is a document a real person puts their name on and sends to an employer
 
 ### Security
 
-- Hash passwords (bcrypt or argon2). Never store or log plaintext passwords.
+- Hash passwords securely. Never store or log plaintext passwords.
 - API keys live in environment variables. **Never in source code, never in a commit.**
 - Validate every request body and query parameter.
 - Rate-limit expensive endpoints — AI analysis and resume generation especially.
